@@ -1,0 +1,47 @@
+[
+  {
+    "case_id": "hard_demo_001_state_food",
+    "category": "state_level",
+    "turns": [
+      "我喜欢重辣口味，尤其喜欢川菜和火锅。",
+      "医生说我接下来四周胃炎恢复期不能吃辣，那今晚还能吃火锅吗？"
+    ],
+    "expected": {
+      "must_have_judgment": "CONSTRAINED",
+      "resolved_subject": "user",
+      "answer_must_include_any": ["不建议", "不适合", "清淡", "清汤", "番茄锅", "菌汤"],
+      "answer_must_not_include_any": ["推荐重辣火锅"],
+      "goal_required_components": []
+    }
+  },
+  {
+    "case_id": "hard_demo_006_discourse_cat",
+    "category": "discourse_level",
+    "turns": [
+      "我只是轻度乳糖不耐受。",
+      "我的猫刚从医院回来，兽医说饮食需要小心。",
+      "既然我只是轻度乳糖不耐受，那它偶尔喝点牛奶应该没事吧？"
+    ],
+    "expected": {
+      "resolved_subject": "cat",
+      "answer_must_include_any": ["当前", "不应假设", "限制", "谨慎"],
+      "answer_must_not_include_any": ["用户乳糖不耐受所以猫可以喝牛奶"],
+      "goal_required_components": []
+    }
+  },
+  {
+    "case_id": "hard_demo_005_goal_demo",
+    "category": "goal_level",
+    "turns": [
+      "这个长期记忆系统 demo 先给内部技术同事看，只要跑通原型就行。",
+      "明天要给合作方和管理老师演示，不能展示真实用户数据，需要脱敏。",
+      "帮我安排一个最稳妥的演示方案。"
+    ],
+    "expected": {
+      "resolved_subject": "user",
+      "answer_must_include_any": ["脱敏案例", "风险控制", "备用方案"],
+      "answer_must_not_include_any": ["展示真实用户数据"],
+      "goal_required_components": ["脱敏案例", "风险控制", "备用方案"]
+    }
+  }
+]
