@@ -2,6 +2,7 @@
 
 import uuid
 
+from cadmr.scope import canonicalize_scopes
 from cadmr.schemas import MemorySignal
 
 
@@ -23,75 +24,10 @@ DEFAULT_CONFIDENCE = {
     "uncertain_intention": 0.65,
 }
 
-ORDINARY_MEMORY_KEYWORDS = [
-    "我喜欢",
-    "我偏好",
-    "我习惯",
-    "我一般",
-    "我经常",
-    "我正在做",
-    "我在准备",
-    "我正在准备",
-    "我的研究方向",
-    "我现在住在",
-    "我住在",
-    "我现在在",
-    "我已经搬到",
-    "我搬到",
-    "我搬去",
-    "我只是",
-    "我的猫",
-]
-ACTIVE_CONSTRAINT_KEYWORDS = [
-    "医生说",
-    "不能",
-    "不要",
-    "避免",
-    "禁止",
-    "必须",
-    "需要",
-    "四周",
-    "三个月内",
-    "胃炎",
-    "受伤",
-    "过敏",
-    "首付",
-    "隐私",
-    "脱敏",
-    "真实数据",
-    "敏感",
-    "兽医说",
-    "饮食需要小心",
-]
-QUERY_INTENT_KEYWORDS = ["能不能", "还能", "帮我", "推荐", "安排", "怎么", "如何", "吗", "？", "?"]
-HYPOTHETICAL_KEYWORDS = ["如果", "假如", "假设", "以后如果", "万一"]
-QUESTION_PREMISE_KEYWORDS = ["既然我", "既然之前", "既然已经"]
-UNCERTAIN_INTENTION_KEYWORDS = ["可能想", "也许", "不确定", "我在考虑", "我有点想"]
-
-
-def contains_any(text: str, keywords: list[str]) -> bool:
-    return any(keyword in text for keyword in keywords)
-
 
 def infer_scope(text: str) -> list[str]:
-    scope_rules = [
-        (["辣", "火锅", "川菜", "饮食", "吃", "餐厅", "牛奶", "乳糖"], ["diet", "preference"]),
-        (["医生", "胃炎", "过敏", "受伤", "不能吃辣", "不耐受", "兽医", "医院", "肾功能", "饮食需要小心"], ["health", "diet"]),
-        (["跑步", "运动", "健身"], ["exercise", "habit"]),
-        (["投资", "风险", "资产", "首付", "资金", "预算"], ["finance"]),
-        (["隐私", "真实数据", "脱敏", "敏感"], ["privacy", "safety"]),
-        (["demo", "汇报", "PPT", "研究", "论文", "项目", "演示"], ["work", "project"]),
-        (["通勤", "骑车", "地铁", "上海", "成都", "北京", "附近"], ["location", "transport"]),
-    ]
-
-    scopes: list[str] = []
-    for keywords, inferred_scopes in scope_rules:
-        if contains_any(text, keywords):
-            for scope in inferred_scopes:
-                if scope not in scopes:
-                    scopes.append(scope)
-
-    return scopes or ["general"]
+    """Compatibility hook; scope inference is owned by LLM extraction."""
+    return ["general"]
 
 
 class MemorySignalExtractor:
@@ -102,34 +38,14 @@ class MemorySignalExtractor:
 
 
 class RuleBasedMemorySignalExtractor(MemorySignalExtractor):
-    """Rule-based extractor for a minimal runnable CADMR version."""
+    """No-op fallback extractor.
+
+    CADMR's evaluation path should use LLMMemorySignalExtractor. This class is
+    kept only as a safe import/default that does not inject keyword rules.
+    """
 
     def extract(self, text: str) -> list[MemorySignal]:
-        rules = [
-            ("ordinary_memory", ORDINARY_MEMORY_KEYWORDS, 0.85),
-            ("active_constraint", ACTIVE_CONSTRAINT_KEYWORDS, 0.9),
-            ("query_intent", QUERY_INTENT_KEYWORDS, 0.8),
-            ("hypothetical", HYPOTHETICAL_KEYWORDS, 0.8),
-            ("question_premise", QUESTION_PREMISE_KEYWORDS, 0.75),
-            ("uncertain_intention", UNCERTAIN_INTENTION_KEYWORDS, 0.65),
-        ]
-
-        signals: list[MemorySignal] = []
-        for signal_type, keywords, confidence in rules:
-            if contains_any(text, keywords):
-                signals.append(
-                    MemorySignal(
-                        signal_id=str(uuid.uuid4()),
-                        signal_type=signal_type,
-                        content=text,
-                        subject="user",
-                        scope=infer_scope(text),
-                        confidence=confidence,
-                        evidence_text=text,
-                    )
-                )
-
-        return signals
+        return []
 
 
 class LLMClient:
@@ -175,16 +91,8 @@ class RuleValidator:
 
             scope = item.get("scope")
             if not self._is_string_list(scope):
-                scope = infer_scope(content)
-            scope = scope or ["general"]
-
-            signal_type = self._repair_signal_type(signal_type, content, original_text)
-            signal_type = self._downgrade_unsupported_constraint(
-                signal_type,
-                content,
-                original_text,
-                scope,
-            )
+                scope = ["general"]
+            scope = canonicalize_scopes(scope or ["general"])
 
             confidence = item.get("confidence", DEFAULT_CONFIDENCE[signal_type])
             if not isinstance(confidence, int | float):
@@ -217,49 +125,6 @@ class RuleValidator:
     def _is_string_list(self, value) -> bool:
         return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
-    def _repair_signal_type(self, signal_type: str, content: str, original_text: str) -> str:
-        combined_text = f"{content}\n{original_text}"
-
-        if signal_type in {"ordinary_memory", "active_constraint"} and contains_any(
-            combined_text,
-            HYPOTHETICAL_KEYWORDS,
-        ):
-            return "hypothetical"
-
-        if signal_type in {"ordinary_memory", "active_constraint"} and contains_any(
-            combined_text,
-            QUESTION_PREMISE_KEYWORDS,
-        ):
-            return "question_premise"
-
-        if signal_type == "ordinary_memory" and contains_any(
-            combined_text,
-            UNCERTAIN_INTENTION_KEYWORDS,
-        ):
-            return "uncertain_intention"
-
-        return signal_type
-
-    def _downgrade_unsupported_constraint(
-        self,
-        signal_type: str,
-        content: str,
-        original_text: str,
-        scope: list[str],
-    ) -> str:
-        if signal_type != "active_constraint":
-            return signal_type
-
-        combined_text = f"{content}\n{original_text}"
-        constraint_scopes = {"health", "finance", "privacy", "safety", "task"}
-        has_constraint_keyword = contains_any(combined_text, ACTIVE_CONSTRAINT_KEYWORDS + ["预算"])
-        has_constraint_scope = bool(constraint_scopes.intersection(scope))
-
-        if has_constraint_keyword or has_constraint_scope:
-            return signal_type
-        return "ordinary_memory"
-
-
 class LLMMemorySignalExtractor(MemorySignalExtractor):
     """LLM extractor with rule validation and pollution prevention."""
 
@@ -269,7 +134,10 @@ class LLMMemorySignalExtractor(MemorySignalExtractor):
 
     def extract(self, text: str) -> list[MemorySignal]:
         prompt = self._build_prompt(text)
-        raw_output = self.llm_client.complete_json(prompt)
+        try:
+            raw_output = self.llm_client.complete_json(prompt)
+        except Exception:
+            return []
         raw_items = raw_output.get("signals", [])
         if not isinstance(raw_items, list):
             raw_items = []
@@ -277,19 +145,32 @@ class LLMMemorySignalExtractor(MemorySignalExtractor):
 
     def _build_prompt(self, text: str) -> str:
         return f"""
-从用户输入中抽取 CADMR memory signals，并只输出严格 JSON。
+Extract CADMR memory signals from the user input and return strict JSON only.
 
-允许的 signal_type：ordinary_memory, active_constraint, query_intent,
-hypothetical, question_premise, uncertain_intention。
+Allowed signal_type values:
+ordinary_memory, active_constraint, query_intent, hypothetical,
+question_premise, uncertain_intention.
 
-要求：
-- 不要把假设写成事实。
-- 不要把问题中的旧前提写成 active memory。
-- 不要把不确定想法写成稳定偏好。
-- query_intent 不代表要写入长期记忆。
-- 一条输入可以输出多个 signals。
+Definitions:
+- ordinary_memory: stable facts, preferences, habits, or long-term background.
+- active_constraint: an explicit current condition that limits answers, plans, or action advice.
+- query_intent: the user's current question, request, or task intent.
+- hypothetical: a hypothetical or counterfactual premise.
+- question_premise: an old premise embedded in a question that should be verified, not written as memory.
+- uncertain_intention: an uncertain, tentative, or exploratory intention.
 
-输出格式：
+Rules:
+- Do not turn hypotheses into facts.
+- Do not turn old premises inside a question into active memory.
+- Do not turn uncertain intentions into stable preferences.
+- query_intent is for answering only and is not long-term memory.
+- A request such as "help me arrange", "can I", "should I", "I am considering", or "I want to know" is query_intent, not active_constraint.
+- active_constraint requires an explicit limiting condition, requirement, prohibition, deadline, safety/privacy/health/resource restriction, or other current constraint.
+- Do not create active_constraint merely because the user asks for a recommendation, plan, or possibility.
+- If one input contains both stable background and a current constraint, split them into separate signals.
+- One input may produce multiple signals.
+
+Return shape:
 {{
   "signals": [
     {{
@@ -303,5 +184,5 @@ hypothetical, question_premise, uncertain_intention。
   ]
 }}
 
-用户输入：{text}
+User input: {text}
 """.strip()

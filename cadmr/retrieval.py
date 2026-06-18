@@ -1,11 +1,12 @@
 """Rule-based memory retrieval."""
 
+from cadmr.scope import canonicalize_scopes
 from cadmr.schemas import ActiveConstraint, OrdinaryMemory, QueryInfo
 from cadmr.stores import ActiveConstraintStore, OrdinaryMemoryStore
 
 
 def _has_scope_overlap(left: list[str], right: list[str]) -> bool:
-    return bool(set(left).intersection(right))
+    return bool(set(canonicalize_scopes(left)).intersection(canonicalize_scopes(right)))
 
 
 class MemoryRetriever:
@@ -15,33 +16,48 @@ class MemoryRetriever:
         self,
         ordinary_store: OrdinaryMemoryStore,
         constraint_store: ActiveConstraintStore,
+        broad: bool = False,
     ):
         self.ordinary_store = ordinary_store
         self.constraint_store = constraint_store
+        self.broad = broad
 
     def retrieve_memories(self, query_info: QueryInfo) -> list[OrdinaryMemory]:
-        active_memories = self.ordinary_store.get_active()
-        if not query_info.query_scope:
-            return active_memories
+        candidate_memories = [
+            memory
+            for memory in self.ordinary_store.list_all()
+            if memory.status in {"active", "stale"}
+        ]
+        if self.broad:
+            return candidate_memories
+        query_scope = canonicalize_scopes(query_info.query_scope)
+        if not query_scope:
+            return candidate_memories
 
         return [
             memory
-            for memory in active_memories
-            if _has_scope_overlap(memory.scope, query_info.query_scope)
+            for memory in candidate_memories
+            if _has_scope_overlap(memory.scope, query_scope)
         ]
 
     def retrieve_constraints(self, query_info: QueryInfo) -> list[ActiveConstraint]:
         active_constraints = self.constraint_store.get_active()
-        if not query_info.query_scope:
+        if self.broad:
+            return active_constraints
+        query_scope = canonicalize_scopes(query_info.query_scope)
+        if not query_scope:
             return active_constraints
 
         scoped_constraints = [
             constraint
             for constraint in active_constraints
-            if _has_scope_overlap(constraint.scope, query_info.query_scope)
+            if _has_scope_overlap(constraint.scope, query_scope)
         ]
         if scoped_constraints:
             return scoped_constraints
+
+        if "general" not in query_scope:
+            return []
 
         return [
             constraint
@@ -64,7 +80,9 @@ class MemoryRetriever:
 
         backtracked_scopes = self._merge_constraint_scopes(constraints)
         if backtracked_scopes:
-            for memory in self.ordinary_store.get_active():
+            for memory in self.ordinary_store.list_all():
+                if memory.status not in {"active", "stale"}:
+                    continue
                 if _has_scope_overlap(memory.scope, backtracked_scopes):
                     memories.append(memory)
 

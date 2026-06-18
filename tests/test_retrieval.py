@@ -72,6 +72,22 @@ def test_retrieve_memories_by_scope(tmp_path):
     assert results == [memory1]
 
 
+def test_retrieve_includes_stale_memories_for_judgment(tmp_path):
+    retriever, ordinary_store, _ = make_retriever(tmp_path)
+    stale_location = make_memory("m1", ["location"], status="stale")
+    active_location = make_memory("m2", ["location"], status="active")
+    unrelated = make_memory("m3", ["finance"], status="stale")
+    ordinary_store.add(stale_location)
+    ordinary_store.add(active_location)
+    ordinary_store.add(unrelated)
+
+    results = retriever.retrieve_memories(make_query_info(["location"]))
+
+    assert stale_location in results
+    assert active_location in results
+    assert unrelated not in results
+
+
 def test_retrieve_constraints_by_scope(tmp_path):
     retriever, _, constraint_store = make_retriever(tmp_path)
     constraint1 = make_constraint("c1", ["health", "diet"])
@@ -90,6 +106,17 @@ def test_expired_constraint_not_returned(tmp_path):
     constraint_store.add(expired)
 
     results = retriever.retrieve_constraints(make_query_info(["diet"]))
+
+    assert results == []
+
+
+def test_unrelated_high_hard_constraint_not_returned_for_scoped_query(tmp_path):
+    retriever, _, constraint_store = make_retriever(tmp_path)
+    constraint = make_constraint("c1", ["health", "transport"])
+    constraint.content = "医生说用户不能长时间开车"
+    constraint_store.add(constraint)
+
+    results = retriever.retrieve_constraints(make_query_info(["location", "diet"]))
 
     assert results == []
 
@@ -120,3 +147,30 @@ def test_constraint_to_memory_backtracking(tmp_path):
 
     assert constraint in constraints
     assert memory in memories
+
+
+def test_retrieval_uses_explicit_scope_labels_without_semantic_aliasing(tmp_path):
+    retriever, ordinary_store, constraint_store = make_retriever(tmp_path)
+    memory = make_memory("m1", ["饮食偏好"])
+    constraint = make_constraint("c1", ["health", "diet"])
+    ordinary_store.add(memory)
+    constraint_store.add(constraint)
+
+    memories, constraints = retriever.retrieve(make_query_info(["dinner", "preferences"]))
+
+    assert memory not in memories
+    assert constraint not in constraints
+
+
+def test_broad_retrieval_returns_all_active_candidates(tmp_path):
+    _, ordinary_store, constraint_store = make_retriever(tmp_path)
+    retriever = MemoryRetriever(ordinary_store, constraint_store, broad=True)
+    memory = make_memory("m1", ["travel"])
+    constraint = make_constraint("c1", ["medical"])
+    ordinary_store.add(memory)
+    constraint_store.add(constraint)
+
+    memories, constraints = retriever.retrieve(make_query_info(["weekend_plan"]))
+
+    assert memories == [memory]
+    assert constraints == [constraint]

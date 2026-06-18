@@ -15,8 +15,17 @@ from cadmr.extractor import LLMMemorySignalExtractor
 from cadmr.openrouter_client import OpenRouterClient
 from cadmr.pipeline import CADMRPipeline
 from cadmr.stores import ActiveConstraintStore, OrdinaryMemoryStore, RawInteractionLog
+from cadmr.config import get_env, load_dotenv
 
-SAFE_NEGATION_KEYWORDS = ["不建议", "不适合", "避免", "不能"]
+SAFE_NEGATION_KEYWORDS = [
+    "not recommend",
+    "not suitable",
+    "avoid",
+    "cannot",
+    "can't",
+    "should not",
+    "do not",
+]
 
 
 def make_pipeline(tmp_dir: Path) -> CADMRPipeline:
@@ -92,8 +101,9 @@ def run_case(case: dict, tmp_root: Path) -> dict:
 
 
 def main() -> int:
-    cases_path = PROJECT_ROOT / "evals" / "hard_cases.json"
-    results_path = PROJECT_ROOT / "evals" / "results_latest.json"
+    load_dotenv()
+    cases_path = PROJECT_ROOT / (get_env("CADMR_EVAL_CASES_PATH", "evals/hard_cases.json") or "evals/hard_cases.json")
+    results_path = PROJECT_ROOT / (get_env("CADMR_EVAL_RESULTS_PATH", "evals/results_latest.json") or "evals/results_latest.json")
     cases = json.loads(cases_path.read_text(encoding="utf-8"))
 
     try:

@@ -1,6 +1,6 @@
 """Top-level CADMR pipeline orchestration."""
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import uuid
 
 from cadmr.answer_generator import ConstrainedAnswerGenerator
@@ -8,6 +8,7 @@ from cadmr.extractor import MemorySignalExtractor, RuleBasedMemorySignalExtracto
 from cadmr.goal_reconstructor import GoalReconstructor
 from cadmr.retrieval import MemoryRetriever
 from cadmr.resolver import ReferentTopicResolver
+from cadmr.scope import canonicalize_scopes
 from cadmr.schemas import (
     ActiveConstraint,
     MemorySignal,
@@ -22,34 +23,12 @@ from cadmr.verifier import AnswerVerifier
 from cadmr.write_gate import MemoryWriteGate
 
 
-LOCATION_KEYWORDS = [
-    "北京",
-    "上海",
-    "成都",
-    "杭州",
-    "深圳",
-    "广州",
-    "南京",
-    "武汉",
-    "西安",
-    "美国",
-    "中国",
-    "纽约",
-    "洛杉矶",
-]
-LOCATION_REPLACEMENT_KEYWORDS = [
-    "现在",
-    "已经",
-    "搬到",
-    "搬去",
-    "住在",
-    "在上海",
-    "在北京",
-    "来到",
-    "出差到",
-]
-PROJECT_KEYWORDS = ["demo", "汇报", "PPT", "项目", "论文", "研究"]
-PROJECT_REPLACEMENT_KEYWORDS = ["改成", "换成", "现在", "这次", "新目标", "不再"]
+ANSWER_TRIGGER_SIGNAL_TYPES = {
+    "query_intent",
+    "question_premise",
+    "hypothetical",
+    "uncertain_intention",
+}
 
 
 class CADMRPipeline:
@@ -91,7 +70,6 @@ class CADMRPipeline:
         for signal, decision in zip(signals, write_decisions, strict=True):
             if decision.decision == "WRITE_TO_ORDINARY_MEMORY":
                 memory = self._signal_to_ordinary_memory(signal, interaction)
-                self._mark_superseded_memories(memory)
                 self.ordinary_store.add(memory)
             elif decision.decision == "WRITE_TO_ACTIVE_CONSTRAINT":
                 self.constraint_store.add(
@@ -108,18 +86,67 @@ class CADMRPipeline:
             all_memories,
             all_constraints,
         )
+        retrieved_memories = []
+        retrieved_constraints = []
         if query_info is None:
             judgments = []
             answer = None
             goal_plan = None
             verify_result = None
+            judge_diagnostics = None
         else:
-            memories, constraints = self.retriever.retrieve(query_info)
-            judgments = self.usability_judge.judge(query_info, memories, constraints)
-            goal_plan = self.goal_reconstructor.reconstruct(query_info, memories, constraints)
-            answer = self.answer_generator.generate(query_info, judgments, constraints)
-            answer = self._append_goal_plan_summary(answer, goal_plan)
-            verify_result = self.answer_verifier.verify(answer, judgments, constraints, goal_plan)
+            retrieved_memories, retrieved_constraints = self.retriever.retrieve(query_info)
+            judgments = self.usability_judge.judge(
+                query_info,
+                retrieved_memories,
+                retrieved_constraints,
+            )
+            judge_diagnostics = self._get_judge_diagnostics()
+            goal_plan = self.goal_reconstructor.reconstruct(
+                query_info,
+                retrieved_memories,
+                retrieved_constraints,
+            )
+            answer = self.answer_generator.generate(
+                query_info,
+                judgments,
+                retrieved_constraints,
+                retrieved_memories,
+            )
+            pre_verify_structured_output = self._build_structured_output(
+                user_input=user_input,
+                signals=signals,
+                write_decisions=write_decisions,
+                query_info=query_info,
+                retrieved_memories=retrieved_memories,
+                retrieved_constraints=retrieved_constraints,
+                judgments=judgments,
+                judge_diagnostics=judge_diagnostics,
+                goal_plan=goal_plan,
+                verify_result=None,
+                answer=answer,
+            )
+            verify_result = self.answer_verifier.verify(
+                answer=answer,
+                judgments=judgments,
+                constraints=retrieved_constraints,
+                goal_plan=goal_plan,
+                structured_output=pre_verify_structured_output,
+            )
+
+        structured_output = self._build_structured_output(
+            user_input=user_input,
+            signals=signals,
+            write_decisions=write_decisions,
+            query_info=query_info,
+            retrieved_memories=retrieved_memories,
+            retrieved_constraints=retrieved_constraints,
+            judgments=judgments,
+            judge_diagnostics=judge_diagnostics,
+            goal_plan=goal_plan,
+            verify_result=verify_result,
+            answer=answer,
+        )
 
         return PipelineResult(
             user_input=user_input,
@@ -130,12 +157,13 @@ class CADMRPipeline:
             answer=answer,
             goal_plan=goal_plan,
             verify_result=verify_result,
+            structured_output=structured_output,
         )
 
     def _make_raw_interaction(self, user_input: str) -> RawInteraction:
         return RawInteraction(
             interaction_id=str(uuid.uuid4()),
-            timestamp=datetime.now(UTC).isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             speaker="user",
             text=user_input,
         )
@@ -148,7 +176,7 @@ class CADMRPipeline:
         return OrdinaryMemory(
             memory_id=str(uuid.uuid4()),
             content=signal.content,
-            subject=self._resolve_signal_subject(signal.content, signal.subject),
+            subject=signal.subject,
             scope=signal.scope,
             stability="long_term",
             status="active",
@@ -166,7 +194,7 @@ class CADMRPipeline:
         return ActiveConstraint(
             constraint_id=str(uuid.uuid4()),
             content=signal.content,
-            subject=self._resolve_signal_subject(signal.content, signal.subject),
+            subject=signal.subject,
             scope=signal.scope,
             priority="high",
             strength="hard",
@@ -187,7 +215,7 @@ class CADMRPipeline:
         memories: list[OrdinaryMemory],
         constraints: list[ActiveConstraint],
     ) -> QueryInfo | None:
-        if not any(signal.signal_type == "query_intent" for signal in signals):
+        if not self._should_answer(user_input, signals):
             return None
 
         resolution = self.resolver.resolve(
@@ -197,20 +225,30 @@ class CADMRPipeline:
             constraints,
         )
         query_scope = self._merge_scopes(signals)
-        if resolution.get("topic_status") == "reentered":
-            for scope in ["work", "project"]:
-                if scope not in query_scope:
-                    query_scope.append(scope)
 
         return QueryInfo(
             query=user_input,
-            query_intent="unknown",
-            query_scope=query_scope,
+            query_intent=self._infer_query_intent(signals),
+            query_scope=canonicalize_scopes(query_scope),
             resolved_subject=resolution.get("resolved_subject", "user"),
             requires_action=True,
             requires_plan=False,
             possible_old_premises=[],
         )
+
+    def _should_answer(self, user_input: str, signals: list[MemorySignal]) -> bool:
+        return any(signal.signal_type in ANSWER_TRIGGER_SIGNAL_TYPES for signal in signals)
+
+    def _infer_query_intent(self, signals: list[MemorySignal]) -> str:
+        if any(signal.signal_type == "query_intent" for signal in signals):
+            return "explicit_query_intent"
+        if any(signal.signal_type == "question_premise" for signal in signals):
+            return "question_with_premise"
+        if any(signal.signal_type == "hypothetical" for signal in signals):
+            return "hypothetical_query"
+        if any(signal.signal_type == "uncertain_intention" for signal in signals):
+            return "uncertain_intention_query"
+        return "implicit_query"
 
     def _merge_scopes(self, signals: list[MemorySignal]) -> list[str]:
         scopes: list[str] = []
@@ -218,67 +256,63 @@ class CADMRPipeline:
             for scope in signal.scope:
                 if scope not in scopes:
                     scopes.append(scope)
-        return scopes or ["general"]
+        return canonicalize_scopes(scopes or ["general"])
 
-    def _mark_superseded_memories(self, new_memory: OrdinaryMemory) -> None:
-        for old_memory in self.ordinary_store.get_active():
-            if old_memory.subject != new_memory.subject:
-                continue
-            if not set(old_memory.scope).intersection(new_memory.scope):
-                continue
-            if self._looks_like_replacement(old_memory.content, new_memory.content):
-                self.ordinary_store.mark_stale(old_memory.memory_id)
-
-    def _looks_like_replacement(self, old_content: str, new_content: str) -> bool:
-        if self._looks_like_location_replacement(old_content, new_content):
-            return True
-        if self._looks_like_project_replacement(old_content, new_content):
-            return True
-        return False
-
-    def _looks_like_location_replacement(
+    def _build_structured_output(
         self,
-        old_content: str,
-        new_content: str,
-    ) -> bool:
-        old_locations = self._matched_keywords(old_content, LOCATION_KEYWORDS)
-        new_locations = self._matched_keywords(new_content, LOCATION_KEYWORDS)
-        if not old_locations or not new_locations:
-            return False
-        if not set(old_locations).symmetric_difference(new_locations):
-            return False
-        return any(keyword in new_content for keyword in LOCATION_REPLACEMENT_KEYWORDS)
+        user_input: str,
+        signals: list[MemorySignal],
+        write_decisions: list,
+        query_info: QueryInfo | None,
+        retrieved_memories: list[OrdinaryMemory],
+        retrieved_constraints: list[ActiveConstraint],
+        judgments: list,
+        judge_diagnostics: dict | None,
+        goal_plan: dict | None,
+        verify_result: dict | None,
+        answer: str | None,
+    ) -> dict:
+        return {
+            "version": 1,
+            "user_input": user_input,
+            "query_info": self._jsonable(query_info),
+            "signals": self._jsonable(signals),
+            "write_decisions": self._jsonable(write_decisions),
+            "retrieved_memories": self._jsonable(retrieved_memories),
+            "retrieved_constraints": self._jsonable(retrieved_constraints),
+            "judgments": self._jsonable(judgments),
+            "status_summary": self._judgment_status_summary(judgments),
+            "judge_diagnostics": self._jsonable(judge_diagnostics),
+            "goal_plan": self._jsonable(goal_plan),
+            "verify_result": self._jsonable(verify_result),
+            "answer": answer,
+        }
 
-    def _looks_like_project_replacement(
-        self,
-        old_content: str,
-        new_content: str,
-    ) -> bool:
-        has_old_project = any(keyword in old_content for keyword in PROJECT_KEYWORDS)
-        has_new_project = any(keyword in new_content for keyword in PROJECT_KEYWORDS)
-        has_replacement = any(keyword in new_content for keyword in PROJECT_REPLACEMENT_KEYWORDS)
-        return has_old_project and has_new_project and has_replacement
+    def _get_judge_diagnostics(self) -> dict | None:
+        diagnostics = getattr(self.usability_judge, "last_diagnostics", None)
+        if diagnostics is None:
+            return None
+        return diagnostics
 
-    def _matched_keywords(self, text: str, keywords: list[str]) -> list[str]:
-        return [keyword for keyword in keywords if keyword in text]
+    def _jsonable(self, value):
+        if hasattr(value, "model_dump"):
+            return value.model_dump()
+        if isinstance(value, list):
+            return [self._jsonable(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self._jsonable(item) for key, item in value.items()}
+        return value
 
-    def _resolve_signal_subject(self, content: str, fallback: str) -> str:
-        if any(keyword in content for keyword in ["猫", "宠物", "兽医"]):
-            return "cat"
-        if any(keyword in content for keyword in ["我爸", "父亲"]):
-            return "father"
-        if any(keyword in content for keyword in ["我妈", "母亲"]):
-            return "mother"
-        return fallback
-
-    def _append_goal_plan_summary(self, answer: str, goal_plan: dict | None) -> str:
-        if not goal_plan or not goal_plan.get("needs_goal_reconstruction"):
-            return answer
-        components = goal_plan.get("required_plan_components", [])
-        forbidden_actions = goal_plan.get("forbidden_actions", [])
-        parts = [answer]
-        if components and not all(component in answer for component in components):
-            parts.append("计划组件：" + "、".join(components))
-        if forbidden_actions and not all(action in answer for action in forbidden_actions):
-            parts.append("禁止动作：" + "、".join(forbidden_actions))
-        return "\n\n".join(part for part in parts if part)
+    def _judgment_status_summary(self, judgments: list) -> dict:
+        summary = {
+            "USABLE": 0,
+            "CONSTRAINED": 0,
+            "STALE": 0,
+            "SUSPENDED": 0,
+            "NOISE": 0,
+        }
+        for judgment in judgments:
+            status = getattr(judgment, "usage_status", None)
+            if status in summary:
+                summary[status] += 1
+        return summary

@@ -26,7 +26,7 @@ def make_memory(content: str) -> OrdinaryMemory:
     )
 
 
-def test_cat_referent_case():
+def test_cat_referent_case_is_noop_without_llm_resolver():
     resolver = ReferentTopicResolver()
 
     result = resolver.resolve(
@@ -36,21 +36,21 @@ def test_cat_referent_case():
         [],
     )
 
-    assert result["resolved_subject"] == "cat"
-    assert result["current_topic"] == "cat_diet"
+    assert result["resolved_subject"] == "user"
+    assert result["current_topic"] == "general"
 
 
-def test_father_and_mother_subject_cases():
+def test_father_and_mother_subject_cases_are_noop_without_llm_resolver():
     resolver = ReferentTopicResolver()
 
     father = resolver.resolve("我爸应该怎么安排体检？", [], [], [])
     mother = resolver.resolve("母亲明天怎么去医院？", [], [], [])
 
-    assert father["resolved_subject"] == "father"
-    assert mother["resolved_subject"] == "mother"
+    assert father["resolved_subject"] == "user"
+    assert mother["resolved_subject"] == "user"
 
 
-def test_topic_return_case():
+def test_topic_return_case_is_noop_without_llm_resolver():
     resolver = ReferentTopicResolver()
 
     result = resolver.resolve(
@@ -60,8 +60,8 @@ def test_topic_return_case():
         [],
     )
 
-    assert result["topic_status"] == "reentered"
-    assert result["current_topic"] == "long_term_memory_demo"
+    assert result["topic_status"] == "active"
+    assert result["current_topic"] == "general"
 
 
 def test_default_user_case():
@@ -69,4 +69,3 @@ def test_default_user_case():
 
     assert result["resolved_subject"] == "user"
     assert result["topic_status"] == "active"
-

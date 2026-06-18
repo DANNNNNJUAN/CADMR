@@ -102,3 +102,4 @@ class PipelineResult(BaseModel):
     answer: str | None
     goal_plan: dict | None = None
     verify_result: dict | None = None
+    structured_output: dict | None = None

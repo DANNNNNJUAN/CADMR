@@ -121,7 +121,8 @@ def test_pipeline_result_can_be_instantiated():
         query_info=None,
         judgments=[],
         answer=None,
+        structured_output={"version": 1, "judgments": []},
     )
 
     assert result.signals == []
-
+    assert result.structured_output["version"] == 1

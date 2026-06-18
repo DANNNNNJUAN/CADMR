@@ -15,32 +15,33 @@ from cadmr.extractor import LLMMemorySignalExtractor
 from cadmr.openrouter_client import OpenRouterClient
 from cadmr.pipeline import CADMRPipeline
 from cadmr.stores import ActiveConstraintStore, OrdinaryMemoryStore, RawInteractionLog
+from cadmr.config import load_dotenv
 
 
 DEMO_CASES = [
     {
         "name": "state-level food case",
         "turns": [
-            "我喜欢重辣口味，尤其喜欢川菜和火锅。",
-            "医生说我接下来四周胃炎恢复期不能吃辣，那今晚还能吃火锅吗？",
+            "I like very spicy food, especially Sichuan food and hotpot.",
+            "My doctor said I cannot eat spicy food during the next four weeks of gastritis recovery. Can I still have hotpot tonight?",
         ],
         "print_fields": ["signals", "write_decisions", "query_info", "judgments", "answer", "verify_result"],
     },
     {
         "name": "discourse-level cat case",
         "turns": [
-            "我只是轻度乳糖不耐受。",
-            "我的猫刚从医院回来，兽医说饮食需要小心。",
-            "既然我只是轻度乳糖不耐受，那它偶尔喝点牛奶应该没事吧？",
+            "I only have mild lactose intolerance.",
+            "My cat just came back from the animal hospital, and the vet said its diet needs to be handled carefully.",
+            "Since I only have mild lactose intolerance, it should be fine if it drinks a little milk occasionally, right?",
         ],
         "print_fields": ["query_info", "judgments", "answer"],
     },
     {
         "name": "goal-level external demo case",
         "turns": [
-            "这个长期记忆系统 demo 先给内部技术同事看，只要跑通原型就行。",
-            "明天要给合作方和管理老师演示，不能展示真实用户数据，需要脱敏。",
-            "帮我安排一个最稳妥的演示方案。",
+            "This long-term memory system demo was first intended for internal technical teammates, so a prototype run-through was enough.",
+            "Tomorrow I need to demo it to partners and faculty supervisors. I cannot show real user data, and examples must be anonymized.",
+            "Help me arrange the safest demo plan.",
         ],
         "print_fields": ["goal_plan", "answer", "verify_result"],
     },
@@ -73,6 +74,7 @@ def print_field(name: str, value) -> None:
 
 
 def main() -> int:
+    load_dotenv()
     try:
         with tempfile.TemporaryDirectory() as tmp:
             for case in DEMO_CASES:

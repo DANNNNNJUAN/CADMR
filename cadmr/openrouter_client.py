@@ -5,6 +5,13 @@ import os
 import urllib.error
 import urllib.request
 
+from cadmr.config import get_env, get_int_env, load_dotenv
+
+
+DEFAULT_MODEL = "openai/gpt-4o-mini"
+DEFAULT_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_TIMEOUT = 60
+
 
 class OpenRouterClient:
     """OpenRouter Chat Completions client implementing the LLMClient interface."""
@@ -12,16 +19,17 @@ class OpenRouterClient:
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "openai/gpt-4o-mini",
-        base_url: str = "https://openrouter.ai/api/v1/chat/completions",
-        timeout: int = 60,
+        model: str | None = None,
+        base_url: str | None = None,
+        timeout: int | None = None,
     ):
+        load_dotenv()
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
         if not self.api_key:
             raise ValueError("OPENROUTER_API_KEY is required to use OpenRouterClient.")
-        self.model = model
-        self.base_url = base_url
-        self.timeout = timeout
+        self.model = model or get_env("OPENROUTER_MODEL", DEFAULT_MODEL)
+        self.base_url = base_url or get_env("OPENROUTER_BASE_URL", DEFAULT_BASE_URL)
+        self.timeout = timeout or get_int_env("OPENROUTER_TIMEOUT", DEFAULT_TIMEOUT)
 
     def complete_json(self, prompt: str) -> dict:
         payload = {
@@ -34,6 +42,7 @@ class OpenRouterClient:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0,
+            "response_format": {"type": "json_object"},
         }
         request = urllib.request.Request(
             self.base_url,
