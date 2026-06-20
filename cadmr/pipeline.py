@@ -113,7 +113,7 @@ class CADMRPipeline:
                 retrieved_constraints,
                 retrieved_memories,
             )
-            pre_verify_structured_output = self._build_structured_output(
+            verify_result = self._verify_answer(
                 user_input=user_input,
                 signals=signals,
                 write_decisions=write_decisions,
@@ -123,16 +123,41 @@ class CADMRPipeline:
                 judgments=judgments,
                 judge_diagnostics=judge_diagnostics,
                 goal_plan=goal_plan,
-                verify_result=None,
                 answer=answer,
             )
-            verify_result = self.answer_verifier.verify(
-                answer=answer,
-                judgments=judgments,
-                constraints=retrieved_constraints,
-                goal_plan=goal_plan,
-                structured_output=pre_verify_structured_output,
-            )
+            if self._should_revise_answer(verify_result):
+                first_verify_result = verify_result
+                revised_answer = self._generate_revised_answer(
+                    query_info=query_info,
+                    judgments=judgments,
+                    retrieved_constraints=retrieved_constraints,
+                    retrieved_memories=retrieved_memories,
+                    prior_answer=answer,
+                    verify_result=first_verify_result,
+                )
+                revised_verify_result = self._verify_answer(
+                    user_input=user_input,
+                    signals=signals,
+                    write_decisions=write_decisions,
+                    query_info=query_info,
+                    retrieved_memories=retrieved_memories,
+                    retrieved_constraints=retrieved_constraints,
+                    judgments=judgments,
+                    judge_diagnostics=judge_diagnostics,
+                    goal_plan=goal_plan,
+                    answer=revised_answer,
+                )
+                revised_verify_result = dict(revised_verify_result)
+                revised_verify_result["revision_attempted"] = True
+                revised_verify_result["revision_trigger_types"] = self._revision_trigger_types(
+                    first_verify_result
+                )
+                revised_verify_result["first_verify_result"] = first_verify_result
+                answer = revised_answer
+                verify_result = revised_verify_result
+            elif verify_result is not None:
+                verify_result = dict(verify_result)
+                verify_result["revision_attempted"] = False
 
         structured_output = self._build_structured_output(
             user_input=user_input,
@@ -159,6 +184,94 @@ class CADMRPipeline:
             verify_result=verify_result,
             structured_output=structured_output,
         )
+
+
+    def _verify_answer(
+        self,
+        user_input: str,
+        signals: list[MemorySignal],
+        write_decisions: list,
+        query_info: QueryInfo,
+        retrieved_memories: list[OrdinaryMemory],
+        retrieved_constraints: list[ActiveConstraint],
+        judgments: list,
+        judge_diagnostics: dict | None,
+        goal_plan: dict | None,
+        answer: str,
+    ) -> dict:
+        pre_verify_structured_output = self._build_structured_output(
+            user_input=user_input,
+            signals=signals,
+            write_decisions=write_decisions,
+            query_info=query_info,
+            retrieved_memories=retrieved_memories,
+            retrieved_constraints=retrieved_constraints,
+            judgments=judgments,
+            judge_diagnostics=judge_diagnostics,
+            goal_plan=goal_plan,
+            verify_result=None,
+            answer=answer,
+        )
+        return self.answer_verifier.verify(
+            answer=answer,
+            judgments=judgments,
+            constraints=retrieved_constraints,
+            goal_plan=goal_plan,
+            structured_output=pre_verify_structured_output,
+        )
+
+    def _should_revise_answer(self, verify_result: dict | None) -> bool:
+        if not isinstance(verify_result, dict):
+            return False
+        if verify_result.get("pass") is True and not verify_result.get("violations"):
+            return False
+        return bool(self._revision_trigger_types(verify_result))
+
+    def _revision_trigger_types(self, verify_result: dict | None) -> list[str]:
+        if not isinstance(verify_result, dict):
+            return []
+        trigger_types = {"stale_memory_use", "constraint_violation"}
+        violations = verify_result.get("violations", [])
+        if not isinstance(violations, list):
+            return []
+        types = []
+        for violation in violations:
+            if not isinstance(violation, dict):
+                continue
+            violation_type = violation.get("type")
+            if violation_type in trigger_types and violation_type not in types:
+                types.append(violation_type)
+        return types
+
+    def _generate_revised_answer(
+        self,
+        query_info: QueryInfo,
+        judgments: list,
+        retrieved_constraints: list[ActiveConstraint],
+        retrieved_memories: list[OrdinaryMemory],
+        prior_answer: str,
+        verify_result: dict,
+    ) -> str:
+        revision_context = {
+            "prior_answer": prior_answer,
+            "violations": verify_result.get("violations", []),
+            "reason": verify_result.get("reason", ""),
+        }
+        try:
+            return self.answer_generator.generate(
+                query_info,
+                judgments,
+                retrieved_constraints,
+                retrieved_memories,
+                revision_context=revision_context,
+            )
+        except TypeError:
+            return self.answer_generator.generate(
+                query_info,
+                judgments,
+                retrieved_constraints,
+                retrieved_memories,
+            )
 
     def _make_raw_interaction(self, user_input: str) -> RawInteraction:
         return RawInteraction(

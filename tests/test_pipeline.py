@@ -514,3 +514,94 @@ def test_pipeline_includes_judge_diagnostics_in_structured_output(tmp_path):
     assert diagnostics["judge_type"] == "DiagnosticJudge"
     assert diagnostics["batches_failed"] == 1
     assert diagnostics["errors"][0]["error_type"] == "ValueError"
+
+
+def test_pipeline_revises_answer_when_verifier_reports_stale_or_constraint_violation(tmp_path):
+    class StaticRetriever:
+        def retrieve(self, query_info):
+            return [], []
+
+    class StaticJudge:
+        last_diagnostics = None
+
+        def judge(self, query_info, memories, constraints):
+            return []
+
+    class RevisingAnswerGenerator:
+        def __init__(self):
+            self.revision_contexts = []
+
+        def generate(
+            self,
+            query_info,
+            judgments,
+            constraints,
+            memories=None,
+            revision_context=None,
+        ):
+            self.revision_contexts.append(revision_context)
+            if revision_context:
+                return "Revised answer using only current allowed evidence."
+            return "Initial answer that relies on stale evidence."
+
+    class TwoStepVerifier:
+        def __init__(self):
+            self.answers = []
+
+        def verify(self, answer, judgments, constraints, goal_plan=None, structured_output=None):
+            self.answers.append(answer)
+            if len(self.answers) == 1:
+                return {
+                    "pass": False,
+                    "violations": [
+                        {
+                            "type": "stale_memory_use",
+                            "evidence": "relies on stale evidence",
+                            "related_id": "m-old",
+                        }
+                    ],
+                    "missing_components": [],
+                    "needs_revision": True,
+                    "reason": "The answer used stale memory as current advice.",
+                    "verifier_type": "fake",
+                }
+            return {
+                "pass": True,
+                "violations": [],
+                "missing_components": [],
+                "needs_revision": False,
+                "reason": "Revised answer passed.",
+                "verifier_type": "fake",
+            }
+
+    raw_log = RawInteractionLog(tmp_path / "raw_interaction_log.jsonl")
+    ordinary_store = OrdinaryMemoryStore(tmp_path / "ordinary_memory.json")
+    constraint_store = ActiveConstraintStore(tmp_path / "active_constraints.json")
+    answer_generator = RevisingAnswerGenerator()
+    verifier = TwoStepVerifier()
+    pipeline = CADMRPipeline(
+        raw_log=raw_log,
+        ordinary_store=ordinary_store,
+        constraint_store=constraint_store,
+        extractor=MockLLMStyleExtractor(),
+        retriever=StaticRetriever(),
+        usability_judge=StaticJudge(),
+        answer_generator=answer_generator,
+        answer_verifier=verifier,
+    )
+
+    result = pipeline.run("今晚还能吃火锅吗？")
+
+    assert verifier.answers == [
+        "Initial answer that relies on stale evidence.",
+        "Revised answer using only current allowed evidence.",
+    ]
+    assert answer_generator.revision_contexts[0] is None
+    assert answer_generator.revision_contexts[1]["violations"][0]["type"] == "stale_memory_use"
+    assert result.answer == "Revised answer using only current allowed evidence."
+    assert result.verify_result["pass"] is True
+    assert result.verify_result["revision_attempted"] is True
+    assert result.verify_result["revision_trigger_types"] == ["stale_memory_use"]
+    assert result.verify_result["first_verify_result"]["pass"] is False
+    assert result.structured_output["answer"] == result.answer
+    assert result.structured_output["verify_result"]["revision_attempted"] is True

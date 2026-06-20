@@ -417,3 +417,45 @@ def test_llm_answer_generator_falls_back_when_client_fails():
 
     assert "reliable basis" in answer
     assert "do not match" not in answer
+
+
+def test_llm_answer_generator_includes_revision_context_for_verifier_feedback():
+    class FakeLLMClient:
+        def __init__(self):
+            self.prompt = ""
+
+        def complete_json(self, prompt):
+            self.prompt = prompt
+            return {"answer": "Here is the revised safe answer."}
+
+    client = FakeLLMClient()
+
+    answer = LLMConstrainedAnswerGenerator(client).generate(
+        make_query_info("What should I do tonight?"),
+        [make_judgment("USABLE")],
+        [],
+        [make_memory("m1", "The user currently wants a quiet evening.")],
+        revision_context={
+            "prior_answer": "Use the stale restaurant preference.",
+            "reason": "The answer used stale memory as current advice.",
+            "violations": [
+                {
+                    "type": "stale_memory_use",
+                    "evidence": "Use the stale restaurant preference",
+                    "related_id": "m-old",
+                },
+                {
+                    "type": "unsupported_claim",
+                    "evidence": "extra claim",
+                    "related_id": "",
+                },
+            ],
+        },
+    )
+
+    assert answer == "Here is the revised safe answer."
+    assert "revision_context" in client.prompt
+    assert "Use the stale restaurant preference" in client.prompt
+    assert "stale_memory_use" in client.prompt
+    assert "unsupported_claim" not in client.prompt
+    assert "Rewrite the answer to remove stale-memory use" in client.prompt

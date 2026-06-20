@@ -31,6 +31,7 @@ class ConstrainedAnswerGenerator:
         judgments: list[MemoryJudgment],
         constraints: list[ActiveConstraint],
         memories: list[OrdinaryMemory] | None = None,
+        revision_context: dict | None = None,
     ) -> str:
         if query_info is None:
             return ""
@@ -248,6 +249,7 @@ class LLMConstrainedAnswerGenerator:
         judgments: list[MemoryJudgment],
         constraints: list[ActiveConstraint],
         memories: list[OrdinaryMemory] | None = None,
+        revision_context: dict | None = None,
     ) -> str:
         if query_info is None:
             return ""
@@ -257,6 +259,7 @@ class LLMConstrainedAnswerGenerator:
             judgments=judgments,
             constraints=constraints,
             memories=memories or [],
+            revision_context=revision_context,
         )
         try:
             raw_result = self.llm_client.complete_json(prompt)
@@ -274,8 +277,15 @@ class LLMConstrainedAnswerGenerator:
         judgments: list[MemoryJudgment],
         constraints: list[ActiveConstraint],
         memories: list[OrdinaryMemory],
+        revision_context: dict | None = None,
     ) -> str:
-        payload = self._build_answer_payload(query_info, judgments, constraints, memories)
+        payload = self._build_answer_payload(
+            query_info,
+            judgments,
+            constraints,
+            memories,
+            revision_context=revision_context,
+        )
         payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
         return f"""
 You are the CADMR final answer generator.
@@ -302,6 +312,9 @@ Use the structured reasoning as follows:
   the current state, but base concrete actions only on the user query,
   answer_visible_memories, and answer_visible_constraints. Avoid using blocked,
   stale, suspended, or noise memory content as action material.
+- If revision_context is present, revise the prior answer specifically to fix
+  verifier violations. Remove any action that triggered stale_memory_use or
+  constraint_violation, and produce a corrected answer that should pass verification.
 
 Return strict JSON:
 {{
@@ -318,6 +331,7 @@ Structured reasoning:
         judgments: list[MemoryJudgment],
         constraints: list[ActiveConstraint],
         memories: list[OrdinaryMemory],
+        revision_context: dict | None = None,
     ) -> dict:
         memory_by_id = {memory.memory_id: memory for memory in memories}
         constraint_by_id = {constraint.constraint_id: constraint for constraint in constraints}
@@ -379,7 +393,7 @@ Structured reasoning:
             or judgment.memory_id in visible_memory_ids
         ]
 
-        return {
+        payload = {
             "query_info": query_info.model_dump(),
             "answer_visible_memories": [memory.model_dump() for memory in visible_memories],
             "answer_visible_constraints": [
@@ -390,6 +404,38 @@ Structured reasoning:
             ],
             "answer_control_judgments": control_judgments,
             "filtered_out_judgment_counts": hidden_counts,
+        }
+        if revision_context:
+            payload["revision_context"] = self._sanitize_revision_context(revision_context)
+        return payload
+
+    def _sanitize_revision_context(self, revision_context: dict) -> dict:
+        violation_types = {"stale_memory_use", "constraint_violation"}
+        violations = revision_context.get("violations", [])
+        if not isinstance(violations, list):
+            violations = []
+        sanitized_violations = []
+        for violation in violations:
+            if not isinstance(violation, dict):
+                continue
+            violation_type = str(violation.get("type", ""))
+            if violation_type not in violation_types:
+                continue
+            sanitized_violations.append(
+                {
+                    "type": violation_type,
+                    "evidence": str(violation.get("evidence", ""))[:500],
+                    "related_id": str(violation.get("related_id", "")),
+                }
+            )
+        return {
+            "prior_answer": str(revision_context.get("prior_answer", ""))[:2000],
+            "reason": str(revision_context.get("reason", ""))[:1000],
+            "violations": sanitized_violations,
+            "instruction": (
+                "Rewrite the answer to remove stale-memory use and constraint violations. "
+                "Use only answer_visible_memories, answer_visible_constraints, and the current query for concrete advice."
+            ),
         }
 
     def _sanitize_control_judgment(self, judgment: MemoryJudgment) -> dict:
