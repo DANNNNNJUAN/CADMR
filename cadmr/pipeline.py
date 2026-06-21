@@ -256,6 +256,7 @@ class CADMRPipeline:
             "prior_answer": prior_answer,
             "violations": verify_result.get("violations", []),
             "reason": verify_result.get("reason", ""),
+            "do_not_mention": self._forbidden_rewrite_patterns(verify_result),
         }
         try:
             return self.answer_generator.generate(
@@ -272,6 +273,51 @@ class CADMRPipeline:
                 retrieved_constraints,
                 retrieved_memories,
             )
+
+    def _forbidden_rewrite_patterns(self, verify_result: dict | None) -> list[str]:
+        if not isinstance(verify_result, dict):
+            return []
+        violations = verify_result.get("violations", [])
+        if not isinstance(violations, list):
+            return []
+
+        patterns: list[str] = []
+        trigger_types = {"stale_memory_use", "constraint_violation"}
+        for violation in violations:
+            if not isinstance(violation, dict):
+                continue
+            if violation.get("type") not in trigger_types:
+                continue
+            evidence = str(violation.get("evidence", "")).strip()
+            for pattern in self._split_forbidden_pattern(evidence):
+                if pattern not in patterns:
+                    patterns.append(pattern)
+        return patterns
+
+    def _split_forbidden_pattern(self, evidence: str) -> list[str]:
+        cleaned = " ".join(evidence.split())
+        if not cleaned:
+            return []
+
+        separators = [", as ", ", which ", ";", ".", " because ", " based on "]
+        if len(cleaned) <= 120 and not any(
+            separator in cleaned for separator in separators
+        ):
+            return [cleaned]
+
+        parts = [cleaned]
+        for separator in separators:
+            next_parts = []
+            for part in parts:
+                next_parts.extend(item.strip() for item in part.split(separator))
+            parts = next_parts
+
+        short_parts = [
+            part
+            for part in parts
+            if 12 <= len(part) <= 120
+        ]
+        return short_parts[:5] or [cleaned[:120]]
 
     def _make_raw_interaction(self, user_input: str) -> RawInteraction:
         return RawInteraction(

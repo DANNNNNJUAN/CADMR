@@ -315,6 +315,9 @@ Use the structured reasoning as follows:
 - If revision_context is present, revise the prior answer specifically to fix
   verifier violations. Remove any action that triggered stale_memory_use or
   constraint_violation, and produce a corrected answer that should pass verification.
+- If revision_context.do_not_mention or revision_context.forbidden_rewrite_patterns
+  is present, do not repeat those phrases, close paraphrases, or the same
+  concrete actions/scenarios in the revised answer.
 
 Return strict JSON:
 {{
@@ -432,11 +435,33 @@ Structured reasoning:
             "prior_answer": str(revision_context.get("prior_answer", ""))[:2000],
             "reason": str(revision_context.get("reason", ""))[:1000],
             "violations": sanitized_violations,
+            "do_not_mention": self._sanitize_forbidden_patterns(
+                revision_context.get("do_not_mention", [])
+            ),
+            "forbidden_rewrite_patterns": self._sanitize_forbidden_patterns(
+                revision_context.get("forbidden_rewrite_patterns", [])
+            ),
             "instruction": (
                 "Rewrite the answer to remove stale-memory use and constraint violations. "
-                "Use only answer_visible_memories, answer_visible_constraints, and the current query for concrete advice."
+                "Use only answer_visible_memories, answer_visible_constraints, and the current query for concrete advice. "
+                "Do not mention or paraphrase the forbidden patterns."
             ),
         }
+
+    def _sanitize_forbidden_patterns(self, value) -> list[str]:
+        if isinstance(value, str):
+            raw_patterns = [value]
+        elif isinstance(value, list):
+            raw_patterns = value
+        else:
+            raw_patterns = []
+
+        patterns: list[str] = []
+        for pattern in raw_patterns:
+            text = " ".join(str(pattern).split())[:200]
+            if text and text not in patterns:
+                patterns.append(text)
+        return patterns[:12]
 
     def _sanitize_control_judgment(self, judgment: MemoryJudgment) -> dict:
         return {

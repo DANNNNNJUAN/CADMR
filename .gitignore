@@ -10,7 +10,7 @@ __pycache__/
 tests/formal_T2_MAIN.json
 STALE-main/
 evals/
-scripts/shards5/
+scripts/shards*/
 data/raw_interaction_log.jsonl
 data/ordinary_memory.json
 data/active_constraints.json

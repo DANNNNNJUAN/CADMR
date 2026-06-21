@@ -556,7 +556,7 @@ def test_pipeline_revises_answer_when_verifier_reports_stale_or_constraint_viola
                     "violations": [
                         {
                             "type": "stale_memory_use",
-                            "evidence": "relies on stale evidence",
+                            "evidence": "relies on stale evidence based on an outdated home office routine",
                             "related_id": "m-old",
                         }
                     ],
@@ -598,6 +598,10 @@ def test_pipeline_revises_answer_when_verifier_reports_stale_or_constraint_viola
     ]
     assert answer_generator.revision_contexts[0] is None
     assert answer_generator.revision_contexts[1]["violations"][0]["type"] == "stale_memory_use"
+    assert answer_generator.revision_contexts[1]["do_not_mention"] == [
+        "relies on stale evidence",
+        "an outdated home office routine",
+    ]
     assert result.answer == "Revised answer using only current allowed evidence."
     assert result.verify_result["pass"] is True
     assert result.verify_result["revision_attempted"] is True

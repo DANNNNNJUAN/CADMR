@@ -438,6 +438,11 @@ def test_llm_answer_generator_includes_revision_context_for_verifier_feedback():
         revision_context={
             "prior_answer": "Use the stale restaurant preference.",
             "reason": "The answer used stale memory as current advice.",
+            "do_not_mention": [
+                "Use the stale restaurant preference",
+                "Cape Kiwanda Trail",
+            ],
+            "forbidden_rewrite_patterns": ["home office productivity"],
             "violations": [
                 {
                     "type": "stale_memory_use",
@@ -456,6 +461,11 @@ def test_llm_answer_generator_includes_revision_context_for_verifier_feedback():
     assert answer == "Here is the revised safe answer."
     assert "revision_context" in client.prompt
     assert "Use the stale restaurant preference" in client.prompt
+    assert "do_not_mention" in client.prompt
+    assert "Cape Kiwanda Trail" in client.prompt
+    assert "forbidden_rewrite_patterns" in client.prompt
+    assert "home office productivity" in client.prompt
     assert "stale_memory_use" in client.prompt
     assert "unsupported_claim" not in client.prompt
     assert "Rewrite the answer to remove stale-memory use" in client.prompt
+    assert "Do not mention or paraphrase the forbidden patterns" in client.prompt
